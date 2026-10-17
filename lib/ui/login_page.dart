@@ -30,7 +30,10 @@ class _LoginPageState extends State<LoginPage> {
       );
       await sesionOf(context).cargar();
     } catch (e) {
-      setState(() => _error = 'Credenciales inválidas');
+      final msg = e is AuthException ? e.message : e.toString();
+      setState(() => _error = msg.contains('Invalid login credentials')
+          ? 'Credenciales inválidas'
+          : msg);
     } finally {
       if (mounted) setState(() => _busy = false);
     }
