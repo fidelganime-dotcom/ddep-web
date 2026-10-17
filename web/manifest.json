@@ -1,0 +1,10 @@
+{
+  "name": "DDEP Pando",
+  "short_name": "DDEP",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#1F3864",
+  "theme_color": "#1F3864",
+  "description": "Venta de valores y control de caja",
+  "icons": []
+}
