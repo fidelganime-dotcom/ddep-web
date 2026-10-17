@@ -4,6 +4,7 @@ import 'config/supabase_config.dart';
 import 'services/sesion.dart';
 import 'ui/login_page.dart';
 import 'ui/shell.dart';
+import 'ui/tema.dart';
 import 'ui/cambiar_password_page.dart';
 
 Future<void> main() async {
@@ -23,27 +24,16 @@ class DdepApp extends StatelessWidget {
     final sesion = Sesion();
     return SesionScope(
       sesion: sesion,
-      child: MaterialApp(
-        title: 'DDEP Pando',
-        debugShowCheckedModeBanner: false,
-        theme: ThemeData(
-          useMaterial3: true,
-          colorScheme: ColorScheme.fromSeed(
-            seedColor: const Color(0xFF1F3864),
-            primary: const Color(0xFF1F3864),
-            secondary: const Color(0xFFC9A227),
-          ),
-          scaffoldBackgroundColor: const Color(0xFFF4F6FA),
-          inputDecorationTheme: const InputDecorationTheme(
-            border: OutlineInputBorder(),
-            isDense: true,
-          ),
-          cardTheme: const CardThemeData(
-            elevation: 1,
-            margin: EdgeInsets.symmetric(vertical: 6),
-          ),
+      child: ValueListenableBuilder<ThemeMode>(
+        valueListenable: modoTema,
+        builder: (_, modo, __) => MaterialApp(
+          title: 'DDEP',
+          debugShowCheckedModeBanner: false,
+          theme: temaClaro(),
+          darkTheme: temaOscuro(),
+          themeMode: modo,
+          home: const Puerta(),
         ),
-        home: const Puerta(),
       ),
     );
   }
