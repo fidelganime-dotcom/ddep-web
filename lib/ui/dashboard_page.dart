@@ -30,7 +30,7 @@ class _DashboardPageState extends State<DashboardPage> {
       final hoyRows =
           ventas.where((v) => v['fecha'] == hoy && v['estado'] != 'ANULADA');
       final mesRows = ventas.where(
-          (v) => (v['fecha'] as String) >= desde && v['estado'] != 'ANULADA');
+          (v) => v['fecha'].toString().compareTo(desde) >= 0 && v['estado'] != 'ANULADA');
       final items = await Api.raw('item_valorado',
           columns: 'id,codigo,descripcion,precio_unitario_vigente,activo',
           orderCol: 'codigo',

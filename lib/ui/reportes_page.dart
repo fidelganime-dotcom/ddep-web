@@ -2,6 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../services/api.dart';
 
+bool enRango(dynamic fecha, String d, String h) {
+  final f = fecha.toString();
+  return f.compareTo(d) >= 0 && f.compareTo(h) <= 0;
+}
+
 class ReportesPage extends StatefulWidget {
   const ReportesPage({super.key});
   @override
@@ -35,18 +40,14 @@ class _ReportesPageState extends State<ReportesPage> {
                 'descripcion': i['descripcion'],
                 'detalle': movs
                     .where((m) =>
-                        m['item_id'] == i['id'] &&
-                        '${m['fecha']}' >= d &&
-                        '${m['fecha']}' <= h)
+                        m['item_id'] == i['id'] && enRango(m['fecha'], d, h))
                     .length,
                 'saldo': movs
                     .where((m) => m['item_id'] == i['id'])
                     .fold<num>(0, (a, m) => a),
                 'total': movs
                     .where((m) =>
-                        m['item_id'] == i['id'] &&
-                        '${m['fecha']}' >= d &&
-                        '${m['fecha']}' <= h)
+                        m['item_id'] == i['id'] && enRango(m['fecha'], d, h))
                     .fold<num>(0, (a, m) => a + ((m['valor'] as num?) ?? 0)),
                 'ultimo': movs
                     .where((m) => m['item_id'] == i['id'])
@@ -69,8 +70,7 @@ class _ReportesPageState extends State<ReportesPage> {
                   '*, item:item_valorado(codigo,descripcion), numero_documento, tipo, cantidad, valor, fecha',
               orderCol: 'id');
           _filas = movs
-              .where((m) =>
-                  '${m['fecha']}' >= d && '${m['fecha']}' <= h)
+              .where((m) => enRango(m['fecha'], d, h))
               .toList()
               .reversed
               .toList();
@@ -81,9 +81,7 @@ class _ReportesPageState extends State<ReportesPage> {
                   '*, tramite(nombre), cajero:usuario_sistema(nombre)', orderCol: 'id');
           _filas = ventas
               .where((v) =>
-                  '${v['fecha']}' >= d &&
-                  '${v['fecha']}' <= h &&
-                  v['estado'] != 'ANULADA')
+                  enRango(v['fecha'], d, h) && v['estado'] != 'ANULADA')
               .toList()
               .reversed
               .toList();

@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../services/api.dart';
 import '../services/sesion.dart';
@@ -168,7 +168,7 @@ class _ArqueoTab extends StatefulWidget {
 class _ArqueoTabState extends State<_ArqueoTab> {
   List<Map<String, dynamic>> _items = [];
   Map<String, dynamic>? _sel;
-  final _fisico = TextEditingController();
+  final _fisica = TextEditingController();
   final _obs = TextEditingController();
   List<Map<String, dynamic>> _tomas = [];
   bool _busy = false;
