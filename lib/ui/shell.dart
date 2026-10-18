@@ -46,7 +46,7 @@ class _ShellState extends State<Shell> {
           {'ADMIN', 'CAJERA', 'TESORERIA', 'AUDITOR'}),
       _NavItem(Icons.payments, 'Caja', const CajaPage(),
           {'ADMIN', 'CAJERA', 'TESORERIA', 'AUDITOR'}),
-      _NavItem(Icons.book, 'Catálogos', const CatalogosPage(), todos),
+      _NavItem(Icons.book, 'Catalogos', const CatalogosPage(), todos),
       _NavItem(Icons.swap_horiz, 'Conciliación', const ConciliacionPage(),
           {'ADMIN', 'TESORERIA', 'AUDITOR'}),
       _NavItem(Icons.verified_user, 'Auditoría', const AuditoriaPage(),

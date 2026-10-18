@@ -184,7 +184,7 @@ class _LoginPageState extends State<LoginPage> {
                             ),
                             clipBehavior: Clip.antiAlias,
                             child: Image.asset(
-                              'images/DDEP.png',
+                              'assets/images/DDEP.png',
                               fit: BoxFit.cover,
                               errorBuilder: (_, __, ___) => const Icon(
                                   Icons.account_balance,
