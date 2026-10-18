@@ -1,7 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../services/api.dart';
-import '../services/sesion.dart';
+import '../services/exportar.dart';
 import '../widgets/snack.dart';
 import 'tema.dart';
 
@@ -18,7 +20,25 @@ class VentasPage extends StatefulWidget {
 class _Linea {
   Map<String, dynamic> item;
   int cantidad;
-  _Linea(this.item, this.cantidad);
+  String serieDel = '';
+  String serieAl = '';
+  late final TextEditingController cantCtrl;
+  late final TextEditingController serieDelCtrl;
+  late final TextEditingController serieAlCtrl;
+
+  _Linea(this.item, this.cantidad) {
+    cantCtrl = TextEditingController(text: '$cantidad');
+    serieDelCtrl = TextEditingController(text: serieDel);
+    serieAlCtrl = TextEditingController(text: serieAl);
+  }
+
+  bool get serializado => item['es_serializado'] == true;
+
+  void dispose() {
+    cantCtrl.dispose();
+    serieDelCtrl.dispose();
+    serieAlCtrl.dispose();
+  }
 }
 
 final NumberFormat _nf = NumberFormat('#,##0.00', 'es_BO');
@@ -59,36 +79,46 @@ String _resumenItems(Map<String, dynamic> v) {
 // ---------------------------------------------------------------------------
 
 class _VentasPageState extends State<VentasPage> {
-  List<Map<String, dynamic>> _ventas = [];
   List<Map<String, dynamic>> _hoy = [];
   bool _cargando = true;
   Map<String, dynamic>? _detalleSel;
+  Timer? _refresco;
 
   @override
   void initState() {
     super.initState();
-    _cargar();
+    _cargar(mostrarCarga: true);
+    // initRealtimeSales: refresco automatico cada 8s (igual que el original)
+    _refresco = Timer.periodic(
+        const Duration(seconds: 8), (_) => _cargar(mostrarCarga: false));
   }
 
-  Future<void> _cargar() async {
-    setState(() => _cargando = true);
+  @override
+  void dispose() {
+    _refresco?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _cargar({bool mostrarCarga = false}) async {
+    if (mostrarCarga && mounted) setState(() => _cargando = true);
     try {
       final hoy = DateFormat('yyyy-MM-dd').format(DateTime.now());
-      final rows = await Api.raw('venta',
-          columns: '*, tramite(nombre), cajero:usuario_sistema(nombre)',
-          orderCol: 'id');
-      _ventas = rows.where((v) => v['fecha'] == hoy).toList().reversed.toList();
+      List<Map<String, dynamic>> rows;
       try {
-        final enriquecidas = await Api.raw('venta',
+        rows = await Api.raw('venta',
             columns:
-                '*,tramite(nombre,codigo),cliente(nombre,ci),detalles:venta_detalle(id,cantidad,subtotal,precio_unitario_congelado,serie_del,serie_al,item:item_valorado(codigo,descripcion))',
+                '*,tramite(nombre,codigo),cliente(nombre,ci),cajero:usuario_sistema(nombre),detalles:venta_detalle(id,cantidad,subtotal,precio_unitario_congelado,serie_del,serie_al,item:item_valorado(codigo,descripcion))',
             eqField: 'fecha',
             eqVal: hoy,
             orderCol: 'id');
-        _hoy = enriquecidas.reversed.toList();
       } catch (_) {
-        _hoy = _ventas;
+        rows = await Api.raw('venta',
+            columns: '*, tramite(nombre), cajero:usuario_sistema(nombre)',
+            eqField: 'fecha',
+            eqVal: hoy,
+            orderCol: 'id');
       }
+      _hoy = rows.reversed.toList();
       final sel = _detalleSel;
       if (sel != null) {
         final id = sel['id'];
@@ -96,7 +126,8 @@ class _VentasPageState extends State<VentasPage> {
         _detalleSel = act.isEmpty ? null : act.first;
       }
     } finally {
-      if (mounted) setState(() => _cargando = false);
+      if (mounted && mostrarCarga) setState(() => _cargando = false);
+      if (mounted && !mostrarCarga) setState(() {});
     }
   }
 
@@ -150,8 +181,13 @@ class _VentasPageState extends State<VentasPage> {
         ),
         actions: [
           BtnSecundario('Cancelar', onPressed: () => Navigator.pop(ctx, false)),
-          BtnPeligro('Anular',
-              icon: Icons.cancel, onPressed: () => Navigator.pop(ctx, true)),
+          BtnPeligro('Anular', icon: Icons.cancel, onPressed: () {
+            if (motivo.text.trim().isEmpty) {
+              snack(ctx, 'Ingrese el motivo de anulacion', error: true);
+              return;
+            }
+            Navigator.pop(ctx, true);
+          }),
         ],
       ),
     );
@@ -159,10 +195,10 @@ class _VentasPageState extends State<VentasPage> {
     try {
       await Api.rpc('sp_anular_venta', {
         'p_venta_id': v['id'],
-        'p_motivo': motivo.text.trim().isEmpty ? 'Sin motivo' : motivo.text.trim(),
+        'p_motivo': motivo.text.trim(),
       });
       if (mounted) snack(context, 'Venta anulada');
-      _cargar();
+      _cargar(mostrarCarga: true);
     } catch (e) {
       if (mounted) snack(context, Api.err(e), error: true);
     }
@@ -232,21 +268,13 @@ class _VentasPageState extends State<VentasPage> {
     if (ok != true || !mounted) return;
     try {
       final n = nombre.text.trim().toUpperCase();
-      if (n.isNotEmpty) {
-        final cliente = await Api.c
-            .from('cliente')
-            .insert({'nombre': n})
-            .select('id')
-            .single();
-        await Api.c
-            .from('venta')
-            .update({'cliente_id': cliente['id'], 'forma_pago': forma})
-            .eq('id', v['id']);
-      } else {
-        await Api.c.from('venta').update({'forma_pago': forma}).eq('id', v['id']);
-      }
+      await Api.rpc('sp_actualizar_venta', {
+        'p_venta_id': v['id'],
+        'p_nombre_cliente': n.isEmpty ? null : n,
+        'p_forma_pago': forma,
+      });
       if (mounted) snack(context, 'Venta actualizada');
-      _cargar();
+      _cargar(mostrarCarga: true);
     } catch (e) {
       if (mounted) snack(context, Api.err(e), error: true);
     }
@@ -271,11 +299,35 @@ class _VentasPageState extends State<VentasPage> {
       ),
     );
     if (ok != true || !mounted) return;
-    snack(context, 'Eliminacion no disponible; use Anular Venta', error: true);
+    try {
+      await Api.rpc('sp_eliminar_venta', {'p_venta_id': v['id']});
+      if (mounted) snack(context, 'Venta eliminada');
+      _cargar(mostrarCarga: true);
+    } catch (e) {
+      if (mounted) snack(context, Api.err(e), error: true);
+    }
   }
 
   void _verDetalleVenta(Map<String, dynamic> v) =>
       setState(() => _detalleSel = v);
+
+  Future<void> _exportarPdf() async {
+    try {
+      await exportarVentasDiariasPdf(
+          _hoy, DateFormat('yyyy-MM-dd').format(DateTime.now()));
+    } catch (e) {
+      if (mounted) snack(context, 'Error al exportar PDF: $e', error: true);
+    }
+  }
+
+  Future<void> _exportarExcel() async {
+    try {
+      await exportarVentasDiariasXlsx(
+          _hoy, DateFormat('yyyy-MM-dd').format(DateTime.now()));
+    } catch (e) {
+      if (mounted) snack(context, 'Error al exportar Excel: $e', error: true);
+    }
+  }
 
   Future<void> _abrirRecibo() async {
     await showDialog(
@@ -458,24 +510,20 @@ class _VentasPageState extends State<VentasPage> {
         : esConsolidada
             ? const Color(0xFFEFF6FF)
             : const Color(0xFFF8FAFC);
-    final rol = sesionOf(context).perfil?.rol ?? '';
-    final puedeOperar = rol == 'ADMIN' || rol == 'CAJERA';
     final acciones = <Widget>[];
-    if (!esAnulada && !esConsolidada && puedeOperar) {
+    if (!esAnulada && !esConsolidada) {
       acciones.add(_miniBoton(
           const Color(0xFFDBEAFE),
           const Color(0xFF2563EB),
           Icons.edit,
           'Editar',
           () => _editar(v)));
-      if (v['estado'] == 'CONFIRMADA') {
-        acciones.add(_miniBoton(
-            const Color(0xFFFEF3C7),
-            const Color(0xFFD97706),
-            Icons.cancel,
-            'Anular',
-            () => _anular(v)));
-      }
+      acciones.add(_miniBoton(
+          const Color(0xFFFEF3C7),
+          const Color(0xFFD97706),
+          Icons.cancel,
+          'Anular',
+          () => _anular(v)));
       acciones.add(_miniBoton(
           const Color(0xFFFEE2E2),
           const Color(0xFFDC2626),
@@ -729,14 +777,10 @@ class _VentasPageState extends State<VentasPage> {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   BtnSecundario('PDF',
-                      icon: Icons.picture_as_pdf,
-                      onPressed: () => snack(context,
-                          'Exportacion no disponible en la version web')),
+                      icon: Icons.picture_as_pdf, onPressed: _exportarPdf),
                   const SizedBox(width: 8),
                   BtnSecundario('Excel',
-                      icon: Icons.table_view,
-                      onPressed: () => snack(context,
-                          'Exportacion no disponible en la version web')),
+                      icon: Icons.table_view, onPressed: _exportarExcel),
                 ],
               ),
             ),
@@ -768,7 +812,6 @@ class _VentasPageState extends State<VentasPage> {
 
   List<DataRow> _filasVenta(Map<String, dynamic> v, int n) {
     final anulada = v['estado'] == 'ANULADA';
-    final colorTexto = anulada ? T.texto2(context) : null;
     final detalles = _detallesDe(v);
     final cantTotal =
         detalles.fold<num>(0, (a, d) => a + ((d['cantidad'] as num?) ?? 0));
@@ -779,12 +822,14 @@ class _VentasPageState extends State<VentasPage> {
             (((d['precio_unitario_congelado'] as num?) ?? 0) *
                 ((d['cantidad'] as num?) ?? 0)));
 
-    TextStyle? st(Color? c) => c == null ? null : TextStyle(color: c);
+    // Java: <tr style="opacity:0.5;"> para ventas anuladas
+    Widget op(Widget w) => anulada ? Opacity(opacity: 0.5, child: w) : w;
+    DataCell dc(Widget w) => DataCell(op(w));
 
     Widget tramiteCodigo() {
       final c = v['tramite']?['codigo'];
       if (c == null || '$c'.trim().isEmpty) {
-        return Text('—', style: st(colorTexto));
+        return Text('—', style: TextStyle(color: T.texto2(context)));
       }
       return Container(
         padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
@@ -802,41 +847,39 @@ class _VentasPageState extends State<VentasPage> {
     Widget tramiteNombre() {
       final t = v['tramite']?['nombre'];
       if (t == null || '$t'.trim().isEmpty) {
-        return Text('—', style: st(colorTexto));
+        return Text('—', style: TextStyle(color: T.texto2(context)));
       }
       return Text('$t',
-          style: TextStyle(
+          style: const TextStyle(
               fontSize: 13.6,
               fontWeight: FontWeight.w600,
-              color: colorTexto ?? const Color(0xFF1E293B)));
+              color: Color(0xFF1E293B)));
     }
 
     if (detalles.isEmpty) {
       return [
         DataRow(onSelectChanged: (_) => _verDetalleVenta(v), cells: [
-          DataCell(Text('#$n',
-              style: TextStyle(
-                  fontWeight: FontWeight.w700, color: colorTexto))),
-          DataCell(Text(_horaCorta(v['hora']), style: st(colorTexto))),
-          DataCell(Row(
+          dc(Text('#$n', style: const TextStyle(fontWeight: FontWeight.w700))),
+          dc(Text(_horaCorta(v['hora']))),
+          dc(Row(
             children: [
               const Icon(Icons.person, size: 14, color: Color(0xFF94A3B8)),
               const SizedBox(width: 4),
-              Text(_clienteDe(v), style: st(colorTexto)),
+              Text(_clienteDe(v)),
             ],
           )),
-          DataCell(tramiteCodigo()),
-          DataCell(tramiteNombre()),
-          DataCell(Text('Sin items',
-              style: TextStyle(fontStyle: FontStyle.italic, color: colorTexto ?? T.texto2(context)))),
-          const DataCell(SizedBox.shrink()),
-          DataCell(Text('0', textAlign: TextAlign.center, style: st(colorTexto))),
-          DataCell(Text('0.00', textAlign: TextAlign.right, style: st(colorTexto))),
-          DataCell(Text('0', textAlign: TextAlign.center, style: st(colorTexto))),
-          DataCell(Text('0.00 Bs',
-              textAlign: TextAlign.right,
+          dc(tramiteCodigo()),
+          dc(tramiteNombre()),
+          dc(Text('Sin items',
               style: TextStyle(
-                  fontWeight: FontWeight.w700, color: colorTexto))),
+                  fontStyle: FontStyle.italic, color: T.texto2(context)))),
+          dc(const SizedBox.shrink()),
+          dc(const SizedBox.shrink()),
+          dc(const SizedBox.shrink()),
+          dc(Text('$cantTotal', textAlign: TextAlign.center)),
+          dc(Text('${_num(totalVenta)} Bs',
+              textAlign: TextAlign.right,
+              style: const TextStyle(fontWeight: FontWeight.w700))),
         ]),
       ];
     }
@@ -846,53 +889,44 @@ class _VentasPageState extends State<VentasPage> {
       final d = detalles[i];
       if (i == 0) {
         filas.add(DataRow(onSelectChanged: (_) => _verDetalleVenta(v), cells: [
-          DataCell(Text('#$n',
-              style: TextStyle(
-                  fontWeight: FontWeight.w700, color: colorTexto))),
-          DataCell(Text(_horaCorta(v['hora']), style: st(colorTexto))),
-          DataCell(Row(
+          dc(Text('#$n', style: const TextStyle(fontWeight: FontWeight.w700))),
+          dc(Text(_horaCorta(v['hora']))),
+          dc(Row(
             children: [
               const Icon(Icons.person, size: 14, color: Color(0xFF94A3B8)),
               const SizedBox(width: 4),
-              Text(_clienteDe(v), style: st(colorTexto)),
+              Text(_clienteDe(v)),
             ],
           )),
-          DataCell(tramiteCodigo()),
-          DataCell(tramiteNombre()),
-          DataCell(itemCodigo(d, colorTexto)),
-          DataCell(Text('${d['item']?['descripcion'] ?? ''}',
-              style: st(colorTexto))),
-          DataCell(Text('${d['cantidad'] ?? 0}',
+          dc(tramiteCodigo()),
+          dc(tramiteNombre()),
+          dc(itemCodigo(d, null)),
+          dc(Text('${d['item']?['descripcion'] ?? ''}')),
+          dc(Text('${d['cantidad'] ?? 0}',
               textAlign: TextAlign.center,
-              style: TextStyle(
-                  fontWeight: FontWeight.w700, color: colorTexto))),
-          DataCell(Text(_num(d['precio_unitario_congelado']),
-              textAlign: TextAlign.right, style: st(colorTexto))),
-          DataCell(Text('$cantTotal',
+              style: const TextStyle(fontWeight: FontWeight.w700))),
+          dc(Text(_num(d['precio_unitario_congelado']),
+              textAlign: TextAlign.right)),
+          dc(Text('$cantTotal',
               textAlign: TextAlign.center,
-              style: TextStyle(
-                  fontWeight: FontWeight.w700, color: colorTexto))),
-          DataCell(Text('${_num(totalVenta)} Bs',
+              style: const TextStyle(fontWeight: FontWeight.w700))),
+          dc(Text('${_num(totalVenta)} Bs',
               textAlign: TextAlign.right,
-              style: TextStyle(
-                  fontWeight: FontWeight.w700,
-                  fontSize: 16,
-                  color: colorTexto))),
+              style: const TextStyle(
+                  fontWeight: FontWeight.w700, fontSize: 16))),
         ]));
       } else {
-        filas.add(DataRow(onSelectChanged: (_) => _verDetalleVenta(v), cells: [
-          for (var k = 0; k < 5; k++) const DataCell(SizedBox.shrink()),
-          DataCell(itemCodigo(d, colorTexto)),
-          DataCell(Text('${d['item']?['descripcion'] ?? ''}',
-              style: st(colorTexto))),
-          DataCell(Text('${d['cantidad'] ?? 0}',
+        filas.add(DataRow(cells: [
+          for (var k = 0; k < 5; k++) dc(const SizedBox.shrink()),
+          dc(itemCodigo(d, null)),
+          dc(Text('${d['item']?['descripcion'] ?? ''}')),
+          dc(Text('${d['cantidad'] ?? 0}',
               textAlign: TextAlign.center,
-              style: TextStyle(
-                  fontWeight: FontWeight.w700, color: colorTexto))),
-          DataCell(Text(_num(d['precio_unitario_congelado']),
-              textAlign: TextAlign.right, style: st(colorTexto))),
-          const DataCell(SizedBox.shrink()),
-          const DataCell(SizedBox.shrink()),
+              style: const TextStyle(fontWeight: FontWeight.w700))),
+          dc(Text(_num(d['precio_unitario_congelado']),
+              textAlign: TextAlign.right)),
+          dc(const SizedBox.shrink()),
+          dc(const SizedBox.shrink()),
         ]));
       }
     }
@@ -1005,7 +1039,8 @@ class _NuevaVentaState extends State<_NuevaVenta> {
     _tramites = await Api.raw('tramite',
         columns: 'id,nombre,tarifa,activo', eqField: 'activo', eqVal: true);
     _items = await Api.raw('item_valorado',
-        columns: 'id,codigo,descripcion,precio_unitario_vigente,activo',
+        columns:
+            'id,codigo,descripcion,precio_unitario_vigente,activo,es_serializado',
         eqField: 'activo',
         eqVal: true,
         orderCol: 'codigo',
@@ -1013,34 +1048,106 @@ class _NuevaVentaState extends State<_NuevaVenta> {
     if (mounted) setState(() {});
   }
 
+  /// cargarTramite() del original: '' limpia, 'MANUAL' no-op conserva lineas,
+  /// otro id reemplaza las lineas con los detalles del tramite.
+  Future<void> _cambiarTramite(String v) async {
+    setState(() {
+      _tramiteSel = v;
+      _tramiteId = (v.isEmpty || v == 'MANUAL') ? null : int.tryParse(v);
+    });
+    if (v.isEmpty) {
+      setState(_vaciarLineas);
+      return;
+    }
+    if (v == 'MANUAL') return;
+    try {
+      final rows = await Api.raw('tramite_detalle',
+          columns:
+              'item_id,cantidad,item:item_valorado(id,codigo,descripcion,precio_unitario_vigente,es_serializado)',
+          eqField: 'tramite_id',
+          eqVal: _tramiteId);
+      if (!mounted) return;
+      setState(() {
+        _vaciarLineas();
+        for (final r in rows) {
+          final it = (r['item'] as Map?)?.cast<String, dynamic>() ?? {};
+          if (it.isEmpty) continue;
+          _lineas.add(_Linea(it, ((r['cantidad'] as num?) ?? 1).toInt()));
+        }
+      });
+    } catch (e) {
+      if (mounted) snack(context, 'Error al cargar detalles del tramite',
+          error: true);
+    }
+  }
+
+  /// buscarCliente() del original (onblur del campo CI).
+  Future<void> _buscarCliente() async {
+    final ci = _ci.text.trim();
+    if (ci.isEmpty) return;
+    try {
+      final rows = await Api.raw('cliente',
+          columns: 'id,nombre,ci', eqField: 'ci', eqVal: ci, limit: 1);
+      if (!mounted || rows.isEmpty) return;
+      final nombre = '${rows.first['nombre'] ?? ''}';
+      if (nombre.trim().isNotEmpty) {
+        setState(() => _cliente.text = nombre);
+      }
+    } catch (_) {}
+  }
+
   double get _total => _lineas.fold(
       0, (a, l) => a + l.cantidad * ((l.item['precio_unitario_vigente'] as num?) ?? 0));
 
+  @override
+  void dispose() {
+    for (final l in _lineas) {
+      l.dispose();
+    }
+    super.dispose();
+  }
+
+  void _vaciarLineas() {
+    for (final l in _lineas) {
+      l.dispose();
+    }
+    _lineas.clear();
+  }
+
   Future<void> _registrar() async {
     if (_lineas.isEmpty) {
-      snack(context, 'Agregue al menos un ítem');
+      snack(context, 'Debe agregar al menos un item', error: true);
+      return;
+    }
+    final ci = _ci.text.trim();
+    final nombre = _cliente.text.trim().toUpperCase();
+    if (ci.isEmpty && nombre.isEmpty) {
+      snack(context, 'Ingrese CI o Nombre del cliente', error: true);
       return;
     }
     setState(() => _busy = true);
     try {
-      final res = await Api.rpc('sp_registrar_venta', {
+      await Api.rpc('sp_registrar_venta', {
         'p_tramite_id': _tramiteId,
         'p_items': [
           for (final l in _lineas)
             {
               'item_id': l.item['id'],
               'cantidad': l.cantidad,
+              if (l.serieDel.trim().isNotEmpty)
+                'serie_del': int.tryParse(l.serieDel.trim()),
+              if (l.serieAl.trim().isNotEmpty)
+                'serie_al': int.tryParse(l.serieAl.trim()),
             }
         ],
         'p_forma_pago': _forma,
-        'p_cliente_nombre': _cliente.text.trim().isEmpty ? null : _cliente.text.trim(),
-        'p_cliente_ci': _ci.text.trim().isEmpty ? null : _ci.text.trim(),
+        'p_cliente_nombre': nombre.isEmpty ? null : nombre,
+        'p_cliente_ci': ci.isEmpty ? null : ci,
       });
       if (mounted) {
-        snack(context,
-            'Venta registrada ${res['numero_recibo']} — Bs ${res['total']}');
+        snack(context, 'Venta registrada exitosamente');
         setState(() {
-          _lineas.clear();
+          _vaciarLineas();
           _cliente.clear();
           _ci.clear();
           _tramiteId = null;
@@ -1181,6 +1288,7 @@ class _NuevaVentaState extends State<_NuevaVenta> {
           _lineas.add(_Linea(item, cant));
         } else {
           ex.first.cantidad += cant;
+          ex.first.cantCtrl.text = '${ex.first.cantidad}';
         }
       });
     });
@@ -1330,41 +1438,25 @@ class _NuevaVentaState extends State<_NuevaVenta> {
                                   overflow: TextOverflow.ellipsis))),
                           DataCell(Text(_num(
                               _lineas[k].item['precio_unitario_vigente']))),
-                          DataCell(Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              IconButton(
-                                padding: EdgeInsets.zero,
-                                constraints: const BoxConstraints(
-                                    minWidth: 28, minHeight: 28),
-                                icon: const Icon(
-                                    Icons.remove_circle_outline,
-                                    size: 18),
-                                onPressed: () => setState(() {
-                                  if (_lineas[k].cantidad > 1) {
-                                    _lineas[k].cantidad--;
-                                  } else {
-                                    _lineas.removeAt(k);
-                                  }
-                                }),
-                              ),
-                              Text('${_lineas[k].cantidad}',
-                                  style: const TextStyle(
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 15)),
-                              IconButton(
-                                padding: EdgeInsets.zero,
-                                constraints: const BoxConstraints(
-                                    minWidth: 28, minHeight: 28),
-                                icon: const Icon(Icons.add_circle_outline,
-                                    size: 18),
-                                onPressed: () =>
-                                    setState(() => _lineas[k].cantidad++),
-                              ),
-                            ],
-                          )),
-                          const DataCell(Text('-')),
-                          const DataCell(Text('-')),
+                          DataCell(SizedBox(
+                              width: 72,
+                              child: TextField(
+                                controller: _lineas[k].cantCtrl,
+                                keyboardType: TextInputType.number,
+                                textAlign: TextAlign.center,
+                                onChanged: (t) {
+                                  final n = int.tryParse(t);
+                                  setState(() {
+                                    _lineas[k].cantidad =
+                                        (n == null || n < 1) ? 1 : n;
+                                  });
+                                },
+                                decoration: const InputDecoration(
+                                    isDense: true,
+                                    contentPadding: EdgeInsets.all(6)),
+                              ))),
+                          DataCell(_campoSerie(k, true)),
+                          DataCell(_campoSerie(k, false)),
                           DataCell(Text(_num(_lineas[k].cantidad *
                               (_lineas[k].item['precio_unitario_vigente']
                                       as num)))),
@@ -1375,7 +1467,7 @@ class _NuevaVentaState extends State<_NuevaVenta> {
                             icon: const Icon(Icons.delete,
                                 size: 18, color: T.red1),
                             onPressed: () =>
-                                setState(() => _lineas.removeAt(k)),
+                                setState(() => _lineas.removeAt(k).dispose()),
                           )),
                         ]),
                       DataRow(cells: [
@@ -1473,12 +1565,7 @@ class _NuevaVentaState extends State<_NuevaVenta> {
                 value: 'MANUAL',
                 child: Text('Venta Manual (sin tramite)')),
           ],
-          onChanged: (v) => setState(() {
-            _tramiteSel = v ?? '';
-            _tramiteId = (v == null || v.isEmpty || v == 'MANUAL')
-                ? null
-                : int.tryParse(v);
-          }),
+          onChanged: (v) => _cambiarTramite(v ?? ''),
         ),
       ],
     );
@@ -1495,9 +1582,14 @@ class _NuevaVentaState extends State<_NuevaVenta> {
             extra: '(opcional)',
             extraColor: T.textSecondary),
         const SizedBox(height: 6),
-        TextField(
-          controller: _ci,
-          decoration: const InputDecoration(hintText: 'CI del cliente'),
+        Focus(
+          onFocusChange: (foco) {
+            if (!foco) _buscarCliente();
+          },
+          child: TextField(
+            controller: _ci,
+            decoration: const InputDecoration(hintText: 'CI del cliente'),
+          ),
         ),
       ],
     );
@@ -1543,6 +1635,29 @@ class _NuevaVentaState extends State<_NuevaVenta> {
       ],
     );
   }
+
+  /// Inputs de serie solo para items serializados ('-' en caso contrario).
+  Widget _campoSerie(int k, bool desde) {
+    final l = _lineas[k];
+    if (!l.serializado) return const Text('-');
+    return SizedBox(
+      width: 74,
+      child: TextField(
+        controller: desde ? l.serieDelCtrl : l.serieAlCtrl,
+        keyboardType: TextInputType.number,
+        textAlign: TextAlign.center,
+        onChanged: (t) {
+          if (desde) {
+            l.serieDel = t;
+          } else {
+            l.serieAl = t;
+          }
+        },
+        decoration: const InputDecoration(
+            isDense: true, contentPadding: EdgeInsets.all(6)),
+      ),
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1577,7 +1692,7 @@ class _DialogoReciboState extends State<_DialogoRecibo> {
     try {
       final rows = await Api.raw('recibo_venta',
           columns:
-              'id,numero,estado,motivo_anulacion,venta_id,sucursal_id,emisor_usuario_id,fecha_emision',
+              'id,numero,estado,motivo_anulacion,venta_id,sucursal_id,emisor_usuario_id,fecha_emision,emisor:usuario_sistema!recibo_venta_emisor_fkey(nombre)',
           eqField: 'venta_id',
           eqVal: v['id'],
           limit: 1);
@@ -1589,49 +1704,17 @@ class _DialogoReciboState extends State<_DialogoRecibo> {
     }
   }
 
-  Future<String> _siguienteNumero() async {
-    final anio = DateTime.now().year;
-    var max = 0;
-    try {
-      final rows = await Api.raw('recibo_venta',
-          columns: 'id,numero,sucursal_id', orderCol: 'id');
-      final pref = 'REC-$anio-';
-      for (final r in rows) {
-        final n = r['numero']?.toString() ?? '';
-        if (n.startsWith(pref)) {
-          final v = int.tryParse(n.substring(pref.length));
-          if (v != null && v > max) max = v;
-        }
-      }
-    } catch (_) {}
-    return 'REC-$anio-${(max + 1).toString().padLeft(6, '0')}';
-  }
-
   Future<void> _emitir() async {
     final v = _venta;
     if (v == null) {
       snack(context, 'Seleccione una venta', error: true);
       return;
     }
-    final usuarioId = sesionOf(context).perfil?.id ?? 5;
     try {
-      final numero = await _siguienteNumero();
-      final emitido = await Api.c
-          .from('recibo_venta')
-          .insert({
-            'venta_id': v['id'],
-            'numero': numero,
-            'sucursal_id': (v['sucursal_id'] as num?) ?? 1,
-            'emisor_usuario_id': usuarioId,
-            'estado': 'EMITIDO',
-            'fecha_emision': DateTime.now().toIso8601String(),
-          })
-          .select(
-              'id,numero,estado,motivo_anulacion,venta_id,sucursal_id,emisor_usuario_id,fecha_emision')
-          .single();
+      final recibo = await Api.rpc('sp_emitir_recibo', {'p_venta_id': v['id']});
       if (!mounted) return;
-      snack(context, 'Recibo $numero emitido correctamente');
-      setState(() => _recibo = emitido);
+      snack(context, 'Recibo ${recibo['numero']} emitido correctamente');
+      setState(() => _recibo = recibo);
     } catch (e) {
       if (mounted) snack(context, Api.err(e), error: true);
     }
@@ -1674,30 +1757,55 @@ class _DialogoReciboState extends State<_DialogoRecibo> {
         ),
         actions: [
           BtnSecundario('Cancelar', onPressed: () => Navigator.pop(ctx, false)),
-          BtnPeligro('Anular',
-              icon: Icons.cancel, onPressed: () => Navigator.pop(ctx, true)),
+          BtnPeligro('Anular', icon: Icons.cancel, onPressed: () {
+            if (motivo.text.trim().isEmpty) {
+              snack(ctx, 'Debe indicar el motivo de anulacion del recibo',
+                  error: true);
+              return;
+            }
+            Navigator.pop(ctx, true);
+          }),
         ],
       ),
     );
-    if (ok != true || motivo.text.trim().isEmpty || !mounted) {
-      if (ok == true && mounted) {
-        snack(context, 'Debe indicar el motivo de anulacion del recibo',
-            error: true);
-      }
-      return;
-    }
-    final usuarioId = sesionOf(context).perfil?.id ?? 5;
+    if (ok != true || !mounted) return;
     try {
-      await Api.c.from('recibo_venta').update({
-        'estado': 'ANULADO',
-        'motivo_anulacion': motivo.text.trim(),
-        'fecha_anulacion': DateTime.now().toIso8601String(),
-        'anulado_por': usuarioId,
-      }).eq('id', r['id']);
+      await Api.rpc('sp_anular_recibo', {
+        'p_recibo_id': r['id'],
+        'p_motivo': motivo.text.trim(),
+      });
       if (mounted) snack(context, 'Recibo anulado');
       _cargarRecibo();
     } catch (e) {
       if (mounted) snack(context, Api.err(e), error: true);
+    }
+  }
+
+  Future<void> _imprimir() async {
+    final v = _venta;
+    final r = _recibo;
+    if (v == null || r == null) {
+      snack(context, 'Emita el recibo antes de imprimir', error: true);
+      return;
+    }
+    try {
+      await imprimirReciboPdf(v, r);
+    } catch (e) {
+      if (mounted) snack(context, 'Error al imprimir: $e', error: true);
+    }
+  }
+
+  Future<void> _exportarPdfRecibo() async {
+    final v = _venta;
+    final r = _recibo;
+    if (v == null || r == null) {
+      snack(context, 'Emita el recibo antes de exportar', error: true);
+      return;
+    }
+    try {
+      await exportarReciboPdf(v, r);
+    } catch (e) {
+      if (mounted) snack(context, 'Error al exportar: $e', error: true);
     }
   }
 
@@ -1867,17 +1975,10 @@ class _DialogoReciboState extends State<_DialogoRecibo> {
             onPressed:
                 _activo ? _anularRecibo : null),
         BtnSecundario('Imprimir',
-            icon: Icons.print,
-            onPressed: _activo
-                ? () => snack(context,
-                    'Impresion no disponible en la version web')
-                : null),
+            icon: Icons.print, onPressed: _activo ? _imprimir : null),
         _BtnExito('Exportar PDF',
             icon: Icons.picture_as_pdf,
-            onPressed: _activo
-                ? () => snack(context,
-                    'Exportacion no disponible en la version web')
-                : null),
+            onPressed: _activo ? _exportarPdfRecibo : null),
         BtnPrimario('Emitir Recibo',
             icon: Icons.send,
             onPressed: (_venta != null && _recibo == null) ? _emitir : null),

@@ -440,6 +440,7 @@ class TablaModerna extends StatelessWidget {
         child: ConstrainedBox(
           constraints: BoxConstraints(minWidth: anchoTotal),
           child: DataTable(
+            showCheckboxColumn: false,
             headingRowColor: WidgetStateProperty.all(
                 oscuro ? T.darkHover : T.tableHover),
             headingTextStyle: TextStyle(
