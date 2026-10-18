@@ -2,10 +2,13 @@
 import 'dart:typed_data';
 
 import 'package:excel/excel.dart';
+import 'package:intl/intl.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
 import 'package:web/web.dart' as web;
+
+import 'api.dart';
 
 /// Réplica de los reportes de Java:
 ///  - `ReporteController.ventaDiariaVentasPdf/Excel`
@@ -779,4 +782,477 @@ Future<void> exportarReciboPdf(
   final bytes = await _reciboPdfBytes(venta, recibo);
   descargar(bytes, 'recibo_${recibo['numero'] ?? 'recibo'}.pdf',
       'application/pdf');
+}
+
+// ---------------------------------------------------------------------------
+// RESUMEN KARDEX VALORADO - PDF + EXCEL
+// Catalogos "PDF Items" / "Excel Items" abren en Java
+// /reportes/resumen-kardex/pdf|excel?sucursalId=1&fechaHasta=hoy
+// (ReporteService.generarResumenKardex, ReporteController.resumenKardex*)
+// ---------------------------------------------------------------------------
+
+class FilaKardexResumen {
+  final int num;
+  final String codigo;
+  final String descripcion;
+  final String unidad;
+  final double pu;
+  final int iniC;
+  final double iniV;
+  final int entC;
+  final double entV;
+  final int salC;
+  final double salV;
+  final int finC;
+  final double finV;
+  const FilaKardexResumen({
+    required this.num,
+    required this.codigo,
+    required this.descripcion,
+    required this.unidad,
+    required this.pu,
+    required this.iniC,
+    required this.iniV,
+    required this.entC,
+    required this.entV,
+    required this.salC,
+    required this.salV,
+    required this.finC,
+    required this.finV,
+  });
+}
+
+/// Réplica exacta de `ReporteService.generarResumenKardex(sucursalId, fechaHasta)`.
+Future<List<FilaKardexResumen>> calcularResumenKardex(
+    String fechaHastaIso) async {
+  final items = await Api.raw('item_valorado',
+      columns: 'id,codigo,descripcion,unidad_medida,precio_unitario_vigente',
+      eqField: 'activo',
+      eqVal: true,
+      orderCol: 'id',
+      asc: true);
+  final movs = await Api.raw('movimiento_inventario',
+      columns: '*', orderCol: 'id');
+  final filtrados = movs.where((m) {
+    final suc = ((m['sucursal_id'] as num?)?.toInt()) ?? 0;
+    final f = '${m['fecha']}';
+    return suc == 1 && f.compareTo(fechaHastaIso) <= 0;
+  }).toList()
+    ..sort((a, b) {
+      final c = '${a['fecha']}'.compareTo('${b['fecha']}');
+      if (c != 0) return c;
+      return (((a['id'] as num?) ?? 0).toInt())
+          .compareTo(((b['id'] as num?) ?? 0).toInt());
+    });
+
+  final out = <FilaKardexResumen>[];
+  var n = 0;
+  for (final it in items) {
+    final iid = ((it['id'] as num?)?.toInt()) ?? -1;
+    var iniC = 0, entC = 0, salC = 0;
+    var iniV = 0.0, entV = 0.0, salV = 0.0;
+    var firstEntry = true;
+    for (final m in filtrados) {
+      if ((((m['item_id'] as num?)?.toInt()) ?? -1) != iid) continue;
+      final tipo = '${m['tipo']}';
+      final cantE = ((m['cantidad_entradas'] as num?) ?? 0).toInt();
+      final valE = ((m['valor_entradas'] as num?) ?? 0).toDouble();
+      final cantS = ((m['cantidad_salidas'] as num?) ?? 0).toInt();
+      final valS = ((m['valor_salidas'] as num?) ?? 0).toDouble();
+      if (tipo == 'APERTURA' && firstEntry) {
+        iniC = cantE > 0 ? cantE : (((m['saldo_cantidad'] as num?) ?? 0).toInt());
+        iniV = valE > 0 ? valE : (((m['saldo_valor'] as num?) ?? 0).toDouble());
+        firstEntry = false;
+      } else if (tipo == 'ENTRADA' ||
+          tipo == 'ENTRADA_INICIAL' ||
+          tipo == 'ENTRADA_REPOSICION') {
+        entC += cantE;
+        entV += valE;
+      } else {
+        salC += cantS;
+        salV += valS;
+      }
+    }
+    n++;
+    out.add(FilaKardexResumen(
+      num: n,
+      codigo: '${it['codigo'] ?? ''}',
+      descripcion: '${it['descripcion'] ?? ''}',
+      unidad: '${it['unidad_medida'] ?? ''}',
+      pu: ((it['precio_unitario_vigente'] as num?) ?? 0).toDouble(),
+      iniC: iniC,
+      iniV: iniV,
+      entC: entC,
+      entV: entV,
+      salC: salC,
+      salV: salV,
+      finC: iniC + entC - salC,
+      finV: iniV + entV - salV,
+    ));
+  }
+  return out;
+}
+
+Future<void> exportarResumenKardexPdf(
+    List<FilaKardexResumen> filas, String fechaIso) async {
+  final fmt = DateFormat("d 'de' MMMM 'de' yyyy", 'es_BO');
+  final fecha = fmt.format(DateTime.parse(fechaIso));
+
+  pw.Widget cell(String txt,
+      {required PdfColor bg,
+      bool right = false,
+      bool center = false,
+      double fontSize = 7}) {
+    return pw.Container(
+      padding: const pw.EdgeInsets.all(3),
+      decoration: pw.BoxDecoration(
+          color: bg, border: pw.Border.all(color: _linea, width: 0.5)),
+      alignment: right
+          ? pw.Alignment.centerRight
+          : center
+              ? pw.Alignment.center
+              : pw.Alignment.centerLeft,
+      child: pw.Text(txt,
+          style: pw.TextStyle(fontSize: fontSize, color: _darkText)),
+    );
+  }
+
+  const headers = [
+    'N°',
+    'Codigo',
+    'Descripcion',
+    'Unid.',
+    'P/U',
+    'Saldo Ini C',
+    'Saldo Ini V',
+    'Ent C',
+    'Ent V',
+    'Sal C',
+    'Sal V',
+    'Saldo Fin C',
+    'Saldo Fin V',
+  ];
+  const anchos = <int, pw.TableColumnWidth>{
+    0: pw.FlexColumnWidth(2.5),
+    1: pw.FlexColumnWidth(6),
+    2: pw.FlexColumnWidth(13),
+    3: pw.FlexColumnWidth(4.5),
+    4: pw.FlexColumnWidth(5.5),
+    5: pw.FlexColumnWidth(5.5),
+    6: pw.FlexColumnWidth(6),
+    7: pw.FlexColumnWidth(4.5),
+    8: pw.FlexColumnWidth(6),
+    9: pw.FlexColumnWidth(4.5),
+    10: pw.FlexColumnWidth(6),
+    11: pw.FlexColumnWidth(6),
+    12: pw.FlexColumnWidth(6.5),
+  };
+
+  final rows = <List<pw.Widget>>[
+    [
+      for (final h in headers)
+        pw.Container(
+            padding: const pw.EdgeInsets.all(5),
+            decoration: const pw.BoxDecoration(color: _dark),
+            alignment: pw.Alignment.center,
+            child: pw.Text(h,
+                textAlign: pw.TextAlign.center,
+                style: pw.TextStyle(
+                    fontSize: 7.5,
+                    fontWeight: pw.FontWeight.bold,
+                    color: PdfColors.white)))
+    ],
+  ];
+
+  for (final f in filas) {
+    final bg = f.num % 2 == 0 ? _alt : PdfColors.white;
+    rows.add([
+      cell('${f.num}', bg: bg, center: true),
+      cell(f.codigo, bg: bg),
+      cell(f.descripcion, bg: bg),
+      cell(f.unidad, bg: bg, center: true),
+      cell(_dosDec(f.pu), bg: bg, right: true),
+      cell('${f.iniC}', bg: bg, right: true),
+      cell(_dosDec(f.iniV), bg: bg, right: true),
+      cell('${f.entC}', bg: bg, right: true),
+      cell(_dosDec(f.entV), bg: bg, right: true),
+      cell('${f.salC}', bg: bg, right: true),
+      cell(_dosDec(f.salV), bg: bg, right: true),
+      cell('${f.finC}', bg: bg, right: true),
+      cell(_dosDec(f.finV), bg: bg, right: true),
+    ]);
+  }
+
+  pw.Widget firma(String label) => pw.Container(
+      alignment: pw.Alignment.center,
+      child: pw.Text('\n\n_________________________\n$label',
+          textAlign: pw.TextAlign.center,
+          style: pw.TextStyle(
+              fontSize: 8,
+              fontWeight: pw.FontWeight.bold,
+              color: _darkText)));
+
+  // Java reparte las filas en varias paginas (iText); aca hacemos lo mismo
+  // porque una sola pw.Page deja de pintar al desbordar.
+  double alturaFila(FilaKardexResumen f) {
+    var lineas = (f.descripcion.length / 33).ceil();
+    final lc = (f.codigo.length / 14).ceil();
+    final lu = (f.unidad.length / 10).ceil();
+    if (lc > lineas) lineas = lc;
+    if (lu > lineas) lineas = lu;
+    if (lineas < 1) lineas = 1;
+    return 16 + 9 * (lineas - 1);
+  }
+
+  const altoContenido = 526.0; // 612 - margenSup 50 - margenInf 36
+  const altoCabeceraTabla = 22.0;
+  const altoFirmas = 75.0;
+  const prePrimera = 123.0; // banner + titulos + fecha + linea
+  const preSiguientes = 43.0; // titulo repetido + linea
+  final altos = filas.map(alturaFila).toList();
+  final tramos = <List<int>>[];
+  var idx = 0;
+  while (idx < filas.length) {
+    final base = (tramos.isEmpty
+            ? altoContenido - prePrimera
+            : altoContenido - preSiguientes) -
+        altoCabeceraTabla;
+    var resto = 0.0;
+    for (var k = idx; k < filas.length; k++) {
+      resto += altos[k];
+    }
+    if (resto <= base - altoFirmas) {
+      tramos.add([idx, filas.length]);
+      break;
+    }
+    var j = idx, s = 0.0;
+    while (j < filas.length && s + altos[j] <= base) {
+      s += altos[j];
+      j++;
+    }
+    if (j == idx) j = idx + 1;
+    tramos.add([idx, j]);
+    idx = j;
+  }
+
+  const formato = PdfPageFormat(792, 612,
+      marginTop: 50, marginBottom: 36, marginLeft: 36, marginRight: 36);
+  final doc = pw.Document();
+  for (var p = 0; p < tramos.length; p++) {
+    final a = tramos[p][0];
+    final b = tramos[p][1];
+    final esUltimo = p == tramos.length - 1;
+    doc.addPage(pw.Page(
+      pageFormat: formato,
+      build: (ctx) => pw.Column(
+        crossAxisAlignment: pw.CrossAxisAlignment.stretch,
+        children: [
+          if (p == 0) ...[
+            pw.Container(
+                padding:
+                    const pw.EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                decoration: const pw.BoxDecoration(color: _dark),
+                child: pw.Column(children: [
+                  pw.Text('DIRECCION DEPARTAMENTAL DE EDUCACION DE PANDO',
+                      textAlign: pw.TextAlign.center,
+                      style: pw.TextStyle(
+                          fontSize: 15,
+                          fontWeight: pw.FontWeight.bold,
+                          color: PdfColors.white)),
+                  pw.SizedBox(height: 2),
+                  pw.Text('Unidad de Asuntos Administrativos',
+                      textAlign: pw.TextAlign.center,
+                      style: const pw.TextStyle(
+                          fontSize: 9, color: PdfColors.white)),
+                ])),
+            pw.SizedBox(height: 8),
+            pw.Text('REPORTE DE KARDEX POR ITEM - VALORADO',
+                textAlign: pw.TextAlign.center,
+                style: pw.TextStyle(
+                    fontSize: 13,
+                    fontWeight: pw.FontWeight.bold,
+                    color: _darkText)),
+            pw.SizedBox(height: 2),
+            pw.Text('Al $fecha (Expresado en Bolivianos)',
+                textAlign: pw.TextAlign.center,
+                style: pw.TextStyle(
+                    fontSize: 9,
+                    fontStyle: pw.FontStyle.italic,
+                    color: _darkText)),
+            pw.SizedBox(height: 4),
+            pw.Align(
+                alignment: pw.Alignment.centerRight,
+                child: pw.Text('Fecha de emision: $fecha',
+                    style:
+                        const pw.TextStyle(fontSize: 9, color: _darkText))),
+            pw.SizedBox(height: 4),
+            pw.Container(height: 2, color: _linea),
+            pw.SizedBox(height: 10),
+          ] else ...[
+            pw.Text('REPORTE DE KARDEX POR ITEM - VALORADO',
+                textAlign: pw.TextAlign.center,
+                style: pw.TextStyle(
+                    fontSize: 11,
+                    fontWeight: pw.FontWeight.bold,
+                    color: _darkText)),
+            pw.SizedBox(height: 2),
+            pw.Text('Al $fecha (Expresado en Bolivianos)',
+                textAlign: pw.TextAlign.center,
+                style: pw.TextStyle(
+                    fontSize: 8,
+                    fontStyle: pw.FontStyle.italic,
+                    color: _darkText)),
+            pw.SizedBox(height: 4),
+            pw.Container(height: 2, color: _linea),
+            pw.SizedBox(height: 8),
+          ],
+          pw.Table(columnWidths: anchos, children: [
+            pw.TableRow(children: rows[0]),
+            for (var k = a; k < b; k++) pw.TableRow(children: rows[k + 1]),
+          ]),
+          if (esUltimo) ...[
+            pw.SizedBox(height: 24),
+            pw.Table(
+                defaultVerticalAlignment: pw.TableCellVerticalAlignment.middle,
+                columnWidths: const {
+                  0: pw.FlexColumnWidth(50),
+                  1: pw.FlexColumnWidth(50),
+                },
+                children: [
+                  pw.TableRow(children: [
+                    firma('Resp. Ventanilla de Valores'),
+                    firma('Visto Bueno'),
+                  ]),
+                ]),
+          ],
+        ],
+      ),
+    ));
+  }
+  final bytes = await doc.save();
+  descargar(bytes, 'resumen_kardex.pdf', 'application/pdf');
+}
+
+Future<void> exportarResumenKardexXlsx(
+    List<FilaKardexResumen> filas, String fechaIso) async {
+  final book = Excel.createExcel();
+  const sheetName = 'Resumen Kardex';
+  final sheet = book[sheetName];
+  for (final name in List<String>.from(book.sheets.keys)) {
+    if (name != sheetName) book.delete(name);
+  }
+
+  final borde =
+      Border(borderStyle: BorderStyle.Thin, borderColorHex: ExcelColor.black);
+  final headerStyle = CellStyle(
+      fontColorHex: ExcelColor.white,
+      backgroundColorHex: ExcelColor.fromInt(0xFF1E3A5F),
+      bold: true,
+      fontSize: 10,
+      horizontalAlign: HorizontalAlign.Center,
+      verticalAlign: VerticalAlign.Center,
+      leftBorder: borde,
+      rightBorder: borde,
+      topBorder: borde,
+      bottomBorder: borde);
+  CellStyle estiloData(bool alt, {HorizontalAlign align = HorizontalAlign.Left}) {
+    return CellStyle(
+        backgroundColorHex:
+            alt ? ExcelColor.fromInt(0xFFF1F5F9) : ExcelColor.white,
+        fontSize: 10,
+        horizontalAlign: align,
+        verticalAlign: VerticalAlign.Center,
+        leftBorder: borde,
+        rightBorder: borde,
+        topBorder: borde,
+        bottomBorder: borde);
+  }
+
+  void put(int col, int row, CellValue? value, CellStyle style) {
+    sheet.cell(CellIndex.indexByColumnRow(columnIndex: col, rowIndex: row))
+      ..value = value
+      ..cellStyle = style;
+  }
+
+  put(
+      0,
+      0,
+      TextCellValue('REPORTE DE KARDEX POR ITEM - VALORADO'),
+      CellStyle(
+          fontColorHex: ExcelColor.white,
+          backgroundColorHex: ExcelColor.fromInt(0xFF1E3A5F),
+          bold: true,
+          fontSize: 14,
+          horizontalAlign: HorizontalAlign.Center,
+          verticalAlign: VerticalAlign.Center,
+          leftBorder: borde,
+          rightBorder: borde,
+          topBorder: borde,
+          bottomBorder: borde));
+  sheet.merge(CellIndex.indexByColumnRow(columnIndex: 0, rowIndex: 0),
+      CellIndex.indexByColumnRow(columnIndex: 12, rowIndex: 0));
+  put(
+      0,
+      1,
+      TextCellValue('Al $fechaIso (Expresado en Bolivianos)'),
+      CellStyle(
+          fontColorHex: ExcelColor.white,
+          backgroundColorHex: ExcelColor.fromInt(0xFF3B82F6),
+          fontSize: 11,
+          horizontalAlign: HorizontalAlign.Center,
+          verticalAlign: VerticalAlign.Center,
+          leftBorder: borde,
+          rightBorder: borde,
+          topBorder: borde,
+          bottomBorder: borde));
+  sheet.merge(CellIndex.indexByColumnRow(columnIndex: 0, rowIndex: 1),
+      CellIndex.indexByColumnRow(columnIndex: 12, rowIndex: 1));
+
+  const headers = [
+    'N°',
+    'Codigo',
+    'Descripcion',
+    'Unid.',
+    'P/U',
+    'Saldo Ini C',
+    'Saldo Ini V',
+    'Ent C',
+    'Ent V',
+    'Sal C',
+    'Sal V',
+    'Saldo Fin C',
+    'Saldo Fin V',
+  ];
+  for (var i = 0; i < headers.length; i++) {
+    put(i, 2, TextCellValue(headers[i]), headerStyle);
+  }
+
+  var row = 3;
+  for (final f in filas) {
+    // Java: alt = rowNum % 2 == 1 con datos desde la fila 3 (1a fila sombreada)
+    final alt = f.num % 2 == 1;
+    put(0, row, IntCellValue(f.num), estiloData(alt, align: HorizontalAlign.Center));
+    put(1, row, TextCellValue(f.codigo), estiloData(alt));
+    put(2, row, TextCellValue(f.descripcion), estiloData(alt));
+    put(3, row, TextCellValue(f.unidad), estiloData(alt, align: HorizontalAlign.Center));
+    put(4, row, DoubleCellValue(f.pu), estiloData(alt, align: HorizontalAlign.Right));
+    put(5, row, IntCellValue(f.iniC), estiloData(alt, align: HorizontalAlign.Right));
+    put(6, row, DoubleCellValue(f.iniV), estiloData(alt, align: HorizontalAlign.Right));
+    put(7, row, IntCellValue(f.entC), estiloData(alt, align: HorizontalAlign.Right));
+    put(8, row, DoubleCellValue(f.entV), estiloData(alt, align: HorizontalAlign.Right));
+    put(9, row, IntCellValue(f.salC), estiloData(alt, align: HorizontalAlign.Right));
+    put(10, row, DoubleCellValue(f.salV), estiloData(alt, align: HorizontalAlign.Right));
+    put(11, row, IntCellValue(f.finC), estiloData(alt, align: HorizontalAlign.Right));
+    put(12, row, DoubleCellValue(f.finV), estiloData(alt, align: HorizontalAlign.Right));
+    row++;
+  }
+
+  for (var i = 0; i < headers.length; i++) {
+    sheet.setColumnAutoFit(i);
+  }
+
+  final bytes = book.encode();
+  if (bytes == null) return;
+  descargar(Uint8List.fromList(bytes), 'resumen_kardex.xlsx',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
 }

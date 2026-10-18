@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../services/api.dart';
+import '../services/exportar.dart';
 import '../services/sesion.dart';
 import '../widgets/snack.dart';
 import 'tema.dart';
@@ -54,6 +55,15 @@ class _CatalogosPageState extends State<CatalogosPage> {
   String? _errItems;
   String? _errTramites;
   String? _errDetalles;
+
+  /// Java: `sesionService.exigirPermiso("EDITAR_CATALOGOS")` en todos los
+  /// endpoints de items/tramites. En BD solo el rol ADMIN lo posee.
+  bool get _puedeEditar =>
+      sesionOf(context).perfil?.rol == 'ADMIN';
+
+  /// Mensaje exacto de `SesionService.exigirPermiso`.
+  static const _errPermiso =
+      'No tiene permiso para esta accion. Requiere: EDITAR_CATALOGOS';
 
   @override
   void initState() {
@@ -122,6 +132,7 @@ class _CatalogosPageState extends State<CatalogosPage> {
   // ============================== ITEMS ==============================
 
   Future<void> _editarItem([Map<String, dynamic>? item]) async {
+    final puede = _puedeEditar;
     final codigo = TextEditingController(text: item?['codigo']?.toString() ?? '');
     final desc =
         TextEditingController(text: item?['descripcion']?.toString() ?? '');
@@ -129,7 +140,6 @@ class _CatalogosPageState extends State<CatalogosPage> {
         text: item != null ? '${item['precio_unitario_vigente']}' : '');
     final um = TextEditingController(
         text: item?['unidad_medida']?.toString() ?? 'UNIDAD');
-    bool activo = (item?['activo'] ?? true) as bool;
     bool serial = (item?['es_serializado'] ?? false) as bool;
 
     final ok = await showDialog<bool>(
@@ -208,21 +218,25 @@ class _CatalogosPageState extends State<CatalogosPage> {
                         style: TextStyle(fontSize: 13.5)),
                   ]),
                 ),
-                CheckboxListTile(
-                  value: activo,
-                  title: const Text('Activo'),
-                  contentPadding: EdgeInsets.zero,
-                  controlAffinity: ListTileControlAffinity.leading,
-                  onChanged: (v) => setD(() => activo = v ?? true),
-                ),
               ],
             ),
           ),
           actions: [
             BtnSecundario('Cancelar',
                 onPressed: () => Navigator.pop(ctx, false)),
-            BtnPrimario('Guardar',
-                icon: Icons.check, onPressed: () => Navigator.pop(ctx, true)),
+            BtnPrimario('Guardar', icon: Icons.check, onPressed: () {
+              if (!puede) {
+                snack(ctx, _errPermiso, error: true);
+                return;
+              }
+              final err = _validarCodigoItem(codigo.text.trim(),
+                  excepto: item == null ? null : _id(item['id']));
+              if (err != null) {
+                snack(ctx, err, error: true);
+                return;
+              }
+              Navigator.pop(ctx, true);
+            }),
           ],
         ),
       ),
@@ -232,23 +246,60 @@ class _CatalogosPageState extends State<CatalogosPage> {
       final data = {
         'codigo': codigo.text.trim(),
         'descripcion': desc.text.trim(),
-        'precio_unitario_vigente': double.parse(precio.text),
+        'precio_unitario_vigente': double.tryParse(precio.text.trim()) ?? 0,
         'unidad_medida': um.text.trim(),
         'es_serializado': serial,
-        'activo': activo,
+        // Java guardarItem() siempre envia activo: true
+        'activo': true,
       };
       if (item == null) {
         await Api.c.from('item_valorado').insert(data);
+        if (mounted) snack(context, 'Item creado');
       } else {
         await Api.c.from('item_valorado').update(data).eq('id', item['id']);
+        if (mounted) snack(context, 'Item actualizado');
       }
-      if (mounted) {
-        snack(context, 'Ítem guardado (solo ADMIN puede modificar)');
-        _cargarItems();
-      }
+      if (mounted) _cargarItems();
     } catch (e) {
       if (mounted) snack(context, Api.err(e), error: true);
     }
+  }
+
+  /// ItemController: valida duplicado de item (excluyendo el propio) y luego
+  /// contra tramites, solo si el codigo no esta vacio.
+  String? _validarCodigoItem(String cod, {int? excepto}) {
+    if (cod.isEmpty) return null;
+    for (final i in _items) {
+      if (_id(i['id']) != excepto && '${i['codigo']}' == cod) {
+        return "El codigo '$cod' ya esta registrado en otro item";
+      }
+    }
+    for (final t in _tramites) {
+      if ('${t['codigo'] ?? ''}' == cod) {
+        return "El codigo '$cod' ya esta registrado en un tramite";
+      }
+    }
+    return null;
+  }
+
+  /// TramiteController: en crear valida contra tramites y contra items;
+  /// en editar solo contra otros tramites.
+  String? _validarCodigoTramite(String cod,
+      {int? excepto, bool checarItem = true}) {
+    if (cod.isEmpty) return null;
+    for (final t in _tramites) {
+      if (_id(t['id']) != excepto && '${t['codigo'] ?? ''}' == cod) {
+        return "El codigo '$cod' ya esta registrado en otro tramite";
+      }
+    }
+    if (checarItem) {
+      for (final i in _items) {
+        if ('${i['codigo']}' == cod) {
+          return "El codigo '$cod' ya esta registrado en un item valorado";
+        }
+      }
+    }
+    return null;
   }
 
   Future<void> _toggleItem(Map<String, dynamic> i) async {
@@ -258,6 +309,10 @@ class _CatalogosPageState extends State<CatalogosPage> {
           titulo: 'Desactivar',
           mensaje: 'Este item quedara como inactivo. Continuar?');
       if (!ok || !mounted) return;
+      if (!_puedeEditar) {
+        snack(context, _errPermiso, error: true);
+        return;
+      }
       try {
         await Api.c.from('item_valorado').update({'activo': false}).eq(
             'id', i['id']);
@@ -268,6 +323,10 @@ class _CatalogosPageState extends State<CatalogosPage> {
       } catch (e) {
         if (mounted) snack(context, Api.err(e), error: true);
       }
+      return;
+    }
+    if (!_puedeEditar) {
+      snack(context, _errPermiso, error: true);
       return;
     }
     try {
@@ -288,8 +347,15 @@ class _CatalogosPageState extends State<CatalogosPage> {
         titulo: 'Eliminar',
         mensaje: 'Esta accion eliminara el item permanentemente. Esta seguro?');
     if (!ok || !mounted) return;
+    if (!_puedeEditar) {
+      snack(context, _errPermiso, error: true);
+      return;
+    }
     try {
-      await Api.c.from('item_valorado').delete().eq('id', i['id']);
+      // ItemValoradoService.eliminarReal: borra venta_detalle,
+      // movimiento_inventario, tramite_detalle, toma_inventario_fisico y
+      // pedido_reposicion antes del item (RLS bloquea DELETE directo).
+      await Api.rpc('sp_eliminar_item_real', {'p_item_id': _id(i['id'])});
       if (mounted) {
         snack(context, 'Item eliminado');
         _cargarItems();
@@ -302,6 +368,7 @@ class _CatalogosPageState extends State<CatalogosPage> {
   // ============================= TRAMITES ============================
 
   Future<void> _editarTramite([Map<String, dynamic>? t]) async {
+    final puede = _puedeEditar;
     final codigo = TextEditingController(text: t?['codigo']?.toString() ?? '');
     final nombre = TextEditingController(text: t?['nombre']?.toString() ?? '');
     final tarifa =
@@ -415,9 +482,20 @@ class _CatalogosPageState extends State<CatalogosPage> {
             actions: [
               BtnSecundario('Cancelar',
                   onPressed: () => Navigator.pop(ctx, false)),
-              BtnPrimario('Guardar',
-                  icon: Icons.check,
-                  onPressed: () => Navigator.pop(ctx, true)),
+              BtnPrimario('Guardar', icon: Icons.check, onPressed: () {
+                if (!puede) {
+                  snack(ctx, _errPermiso, error: true);
+                  return;
+                }
+                final err = _validarCodigoTramite(codigo.text.trim(),
+                    excepto: t == null ? null : _id(t['id']),
+                    checarItem: t == null);
+                if (err != null) {
+                  snack(ctx, err, error: true);
+                  return;
+                }
+                Navigator.pop(ctx, true);
+              }),
             ],
           );
         },
@@ -425,10 +503,11 @@ class _CatalogosPageState extends State<CatalogosPage> {
     );
     if (ok != true || !mounted) return;
     try {
+      // Java guardarTramite() envia descripcion: '' y activo: true siempre.
       final data = {
         'codigo': codigo.text.trim(),
         'nombre': nombre.text.trim(),
-        'descripcion': t?['descripcion']?.toString() ?? '',
+        'descripcion': '',
         'tarifa': double.tryParse(tarifa.text) ?? 0,
         'activo': true,
       };
@@ -453,22 +532,12 @@ class _CatalogosPageState extends State<CatalogosPage> {
           _cargarTramites();
         }
       } else {
+        // Java editarTramite(): PUT del tramite; los checkboxes de items NO
+        // se guardan (el PUT ignora los detalles) - paridad exacta.
         await Api.c.from('tramite').update(data).eq('id', t['id']);
-        await Api.c.from('tramite_detalle').delete().eq('tramite_id', t['id']);
-        for (final i in _items) {
-          if (i['activo'] != true) continue;
-          final k = '${i['id']}';
-          if (sel[k] != true) continue;
-          await Api.c.from('tramite_detalle').insert({
-            'tramite_id': t['id'],
-            'item_id': i['id'],
-            'cantidad': cant[k] ?? 1,
-          });
-        }
         if (mounted) {
-          snack(context, 'Trámite guardado');
+          snack(context, 'Tramite actualizado');
           _cargarTramites();
-          if (_tramiteDetallesId == _id(t['id'])) _cargarDetalles();
         }
       }
     } catch (e) {
@@ -542,6 +611,10 @@ class _CatalogosPageState extends State<CatalogosPage> {
           titulo: 'Desactivar',
           mensaje: 'Este tramite quedara como inactivo. Continuar?');
       if (!ok || !mounted) return;
+      if (!_puedeEditar) {
+        snack(context, _errPermiso, error: true);
+        return;
+      }
       try {
         await Api.c.from('tramite').update({'activo': false}).eq('id', t['id']);
         if (mounted) {
@@ -551,6 +624,10 @@ class _CatalogosPageState extends State<CatalogosPage> {
       } catch (e) {
         if (mounted) snack(context, Api.err(e), error: true);
       }
+      return;
+    }
+    if (!_puedeEditar) {
+      snack(context, _errPermiso, error: true);
       return;
     }
     try {
@@ -570,6 +647,10 @@ class _CatalogosPageState extends State<CatalogosPage> {
         mensaje:
             'Esta accion eliminara el tramite y sus items vinculados. Esta seguro?');
     if (!ok || !mounted) return;
+    if (!_puedeEditar) {
+      snack(context, _errPermiso, error: true);
+      return;
+    }
     try {
       await Api.c.from('tramite_detalle').delete().eq('tramite_id', t['id']);
       await Api.c.from('tramite').delete().eq('id', t['id']);
@@ -593,6 +674,7 @@ class _CatalogosPageState extends State<CatalogosPage> {
 
   Future<void> _abrirVincular() async {
     if (_tramiteDetallesId == null) return;
+    final puede = _puedeEditar;
     final activos =
         _items.where((i) => i['activo'] == true).toList(growable: false);
     int? itemId = activos.isEmpty ? null : _id(activos.first['id']);
@@ -652,16 +734,23 @@ class _CatalogosPageState extends State<CatalogosPage> {
               texto: 'Vincular',
               icon: Icons.link,
               color: _verdeBtn,
-              onPressed: () => Navigator.pop(ctx, true)),
+              onPressed: () {
+                final c = int.tryParse(cantidad.text) ?? 0;
+                if (itemId == null || c < 1) {
+                  snack(ctx, 'Seleccione item y cantidad');
+                  return;
+                }
+                if (!puede) {
+                  snack(ctx, _errPermiso, error: true);
+                  return;
+                }
+                Navigator.pop(ctx, true);
+              }),
         ],
       ),
     );
     if (ok != true || !mounted) return;
     final c = int.tryParse(cantidad.text) ?? 0;
-    if (itemId == null || c < 1) {
-      snack(context, 'Seleccione item y cantidad');
-      return;
-    }
     try {
       await Api.c.from('tramite_detalle').insert({
         'tramite_id': _tramiteDetallesId,
@@ -681,6 +770,10 @@ class _CatalogosPageState extends State<CatalogosPage> {
     final ok = await _confirmar(context,
         titulo: 'Desvincular', mensaje: 'Quitar este item del tramite?');
     if (!ok || !mounted) return;
+    if (!_puedeEditar) {
+      snack(context, _errPermiso, error: true);
+      return;
+    }
     try {
       await Api.c.from('tramite_detalle').delete().eq('id', d['id']);
       if (mounted) {
@@ -696,7 +789,6 @@ class _CatalogosPageState extends State<CatalogosPage> {
 
   @override
   Widget build(BuildContext context) {
-    final admin = sesionOf(context).perfil?.rol == 'ADMIN';
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -706,14 +798,31 @@ class _CatalogosPageState extends State<CatalogosPage> {
               ? (cc.maxWidth - 16) / 2
               : cc.maxWidth;
           return Wrap(spacing: 16, runSpacing: 4, children: [
-            SizedBox(width: ancho, child: _tarjetaItems(context, admin)),
-            SizedBox(width: ancho, child: _tarjetaTramites(context, admin)),
+            SizedBox(width: ancho, child: _tarjetaItems(context)),
+            SizedBox(width: ancho, child: _tarjetaTramites(context)),
           ]);
         }),
-        if (_tramiteDetallesId != null)
-          _tarjetaDetalles(context, admin),
+        if (_tramiteDetallesId != null) _tarjetaDetalles(context),
       ],
     );
+  }
+
+  /// `exportarItemsPDF()` / `exportarItemsExcel()` de Java: abren
+  /// `/reportes/resumen-kardex/pdf|excel?sucursalId=1&fechaHasta=<hoy>`.
+  Future<void> _exportarItems(bool pdf) async {
+    final hoy = DateTime.now();
+    final iso =
+        '${hoy.year.toString().padLeft(4, '0')}-${hoy.month.toString().padLeft(2, '0')}-${hoy.day.toString().padLeft(2, '0')}';
+    try {
+      final filas = await calcularResumenKardex(iso);
+      if (pdf) {
+        await exportarResumenKardexPdf(filas, iso);
+      } else {
+        await exportarResumenKardexXlsx(filas, iso);
+      }
+    } catch (e) {
+      if (mounted) snack(context, Api.err(e), error: true);
+    }
   }
 
   Widget _cabecera(BuildContext context) {
@@ -754,22 +863,20 @@ class _CatalogosPageState extends State<CatalogosPage> {
                 icon: Icons.picture_as_pdf,
                 color: _gris,
                 outline: true,
-                onPressed: () => snack(context,
-                    'Exportacion no disponible en la version web')),
+                onPressed: () => _exportarItems(true)),
             _BtnBarra(
                 texto: 'Excel Items',
                 icon: Icons.table_view,
                 color: _gris,
                 outline: true,
-                onPressed: () => snack(context,
-                    'Exportacion no disponible en la version web')),
+                onPressed: () => _exportarItems(false)),
           ]),
         ],
       ),
     );
   }
 
-  Widget _tarjetaItems(BuildContext context, bool admin) {
+  Widget _tarjetaItems(BuildContext context) {
     return SoftCard(
       padding: EdgeInsets.zero,
       margin: EdgeInsets.zero,
@@ -782,22 +889,20 @@ class _CatalogosPageState extends State<CatalogosPage> {
               icono: Icons.inventory_2,
               color: _verde,
               titulo: 'Items / Formularios',
-              acciones: admin
-                  ? BtnPrimario('Nuevo Item',
-                      icon: Icons.add, onPressed: () => _editarItem())
-                  : null,
+              acciones: BtnPrimario('Nuevo Item',
+                  icon: Icons.add, onPressed: () => _editarItem()),
             ),
           ),
           Padding(
             padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
-            child: _contenidoItems(context, admin),
+            child: _contenidoItems(context),
           ),
         ],
       ),
     );
   }
 
-  Widget _contenidoItems(BuildContext context, bool admin) {
+  Widget _contenidoItems(BuildContext context) {
     if (_cargandoItems) return _estado(context, 'Cargando items...');
     if (_errItems != null) return _estado(context, _errItems!, error: true);
     if (_items.isEmpty) return _estado(context, 'No hay items registrados');
@@ -849,36 +954,34 @@ class _CatalogosPageState extends State<CatalogosPage> {
                       texto: 'Inactivo',
                       icono: Icons.cancel)),
               DataCell(Row(mainAxisSize: MainAxisSize.min, children: [
-                if (admin) ...[
+                _BtnAccion(
+                    bg: _azulBg,
+                    fg: _azulTxt,
+                    icon: Icons.edit,
+                    tooltip: 'Editar',
+                    onTap: () => _editarItem(i)),
+                const SizedBox(width: 6),
+                if (activo)
                   _BtnAccion(
-                      bg: _azulBg,
-                      fg: _azulTxt,
-                      icon: Icons.edit,
-                      tooltip: 'Editar',
-                      onTap: () => _editarItem(i)),
-                  const SizedBox(width: 6),
-                  if (activo)
-                    _BtnAccion(
-                        bg: _ambarBg,
-                        fg: _ambarTxt,
-                        icon: Icons.toggle_off,
-                        tooltip: 'Desactivar',
-                        onTap: () => _toggleItem(i))
-                  else
-                    _BtnAccion(
-                        bg: _verdeBg,
-                        fg: _verdeTxt,
-                        icon: Icons.toggle_on,
-                        tooltip: 'Activar',
-                        onTap: () => _toggleItem(i)),
-                  const SizedBox(width: 6),
+                      bg: _ambarBg,
+                      fg: _ambarTxt,
+                      icon: Icons.toggle_off,
+                      tooltip: 'Desactivar',
+                      onTap: () => _toggleItem(i))
+                else
                   _BtnAccion(
-                      bg: _rojoBg,
-                      fg: _rojo,
-                      icon: Icons.delete,
-                      tooltip: 'Eliminar',
-                      onTap: () => _eliminarItem(i)),
-                ],
+                      bg: _verdeBg,
+                      fg: _verdeTxt,
+                      icon: Icons.toggle_on,
+                      tooltip: 'Activar',
+                      onTap: () => _toggleItem(i)),
+                const SizedBox(width: 6),
+                _BtnAccion(
+                    bg: _rojoBg,
+                    fg: _rojo,
+                    icon: Icons.delete,
+                    tooltip: 'Eliminar',
+                    onTap: () => _eliminarItem(i)),
               ])),
             ]);
           }(),
@@ -886,7 +989,7 @@ class _CatalogosPageState extends State<CatalogosPage> {
     );
   }
 
-  Widget _tarjetaTramites(BuildContext context, bool admin) {
+  Widget _tarjetaTramites(BuildContext context) {
     return SoftCard(
       padding: EdgeInsets.zero,
       margin: EdgeInsets.zero,
@@ -899,22 +1002,20 @@ class _CatalogosPageState extends State<CatalogosPage> {
               icono: Icons.book,
               color: _morado,
               titulo: 'Tramites',
-              acciones: admin
-                  ? BtnPrimario('Nuevo Tramite',
-                      icon: Icons.add, onPressed: () => _editarTramite())
-                  : null,
+              acciones: BtnPrimario('Nuevo Tramite',
+                  icon: Icons.add, onPressed: () => _editarTramite()),
             ),
           ),
           Padding(
             padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
-            child: _contenidoTramites(context, admin),
+            child: _contenidoTramites(context),
           ),
         ],
       ),
     );
   }
 
-  Widget _contenidoTramites(BuildContext context, bool admin) {
+  Widget _contenidoTramites(BuildContext context) {
     if (_cargandoTramites) return _estado(context, 'Cargando tramites...');
     if (_errTramites != null) {
       return _estado(context, _errTramites!, error: true);
@@ -956,44 +1057,42 @@ class _CatalogosPageState extends State<CatalogosPage> {
                       texto: 'Inactivo',
                       icono: Icons.cancel)),
               DataCell(Row(mainAxisSize: MainAxisSize.min, children: [
-                if (admin) ...[
+                _BtnAccion(
+                    bg: _azulBg,
+                    fg: _azulTxt,
+                    icon: Icons.edit,
+                    tooltip: 'Editar',
+                    onTap: () => _editarTramite(t)),
+                const SizedBox(width: 6),
+                if (activo)
                   _BtnAccion(
-                      bg: _azulBg,
-                      fg: _azulTxt,
-                      icon: Icons.edit,
-                      tooltip: 'Editar',
-                      onTap: () => _editarTramite(t)),
-                  const SizedBox(width: 6),
-                  if (activo)
-                    _BtnAccion(
-                        bg: _ambarBg,
-                        fg: _ambarTxt,
-                        icon: Icons.toggle_off,
-                        tooltip: 'Desactivar',
-                        onTap: () => _toggleTramite(t))
-                  else
-                    _BtnAccion(
-                        bg: _verdeBg,
-                        fg: _verdeTxt,
-                        icon: Icons.toggle_on,
-                        tooltip: 'Activar',
-                        onTap: () => _toggleTramite(t)),
+                      bg: _ambarBg,
+                      fg: _ambarTxt,
+                      icon: Icons.toggle_off,
+                      tooltip: 'Desactivar',
+                      onTap: () => _toggleTramite(t))
+                else
+                  _BtnAccion(
+                      bg: _verdeBg,
+                      fg: _verdeTxt,
+                      icon: Icons.toggle_on,
+                      tooltip: 'Activar',
+                      onTap: () => _toggleTramite(t)),
+                const SizedBox(width: 6),
+                _BtnAccion(
+                    bg: _rojoBg,
+                    fg: _rojo,
+                    icon: Icons.delete,
+                    tooltip: 'Eliminar',
+                    onTap: () => _eliminarTramite(t)),
+                if (activo) ...[
                   const SizedBox(width: 6),
                   _BtnAccion(
-                      bg: _rojoBg,
-                      fg: _rojo,
-                      icon: Icons.delete,
-                      tooltip: 'Eliminar',
-                      onTap: () => _eliminarTramite(t)),
-                  if (activo) ...[
-                    const SizedBox(width: 6),
-                    _BtnAccion(
-                        bg: _verdeLinkBg,
-                        fg: _verdeLink,
-                        icon: Icons.link,
-                        tooltip: 'Vincular Items',
-                        onTap: () => _verDetalles(t)),
-                  ],
+                      bg: _verdeLinkBg,
+                      fg: _verdeLink,
+                      icon: Icons.link,
+                      tooltip: 'Vincular Items',
+                      onTap: () => _verDetalles(t)),
                 ],
               ])),
             ]);
@@ -1002,7 +1101,7 @@ class _CatalogosPageState extends State<CatalogosPage> {
     );
   }
 
-  Widget _tarjetaDetalles(BuildContext context, bool admin) {
+  Widget _tarjetaDetalles(BuildContext context) {
     return SoftCard(
       padding: EdgeInsets.zero,
       margin: const EdgeInsets.only(top: 16),
@@ -1015,25 +1114,23 @@ class _CatalogosPageState extends State<CatalogosPage> {
               icono: Icons.link,
               color: _ambar,
               titulo: 'Items del Tramite: $_tramiteDetallesNombre',
-              acciones: admin
-                  ? _BtnBarra(
-                      texto: 'Vincular Item',
-                      icon: Icons.add,
-                      color: _verdeBtn,
-                      onPressed: _abrirVincular)
-                  : null,
+              acciones: _BtnBarra(
+                  texto: 'Vincular Item',
+                  icon: Icons.add,
+                  color: _verdeBtn,
+                  onPressed: _abrirVincular),
             ),
           ),
           Padding(
             padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
-            child: _contenidoDetalles(context, admin),
+            child: _contenidoDetalles(context),
           ),
         ],
       ),
     );
   }
 
-  Widget _contenidoDetalles(BuildContext context, bool admin) {
+  Widget _contenidoDetalles(BuildContext context) {
     if (_cargandoDetalles) return _estado(context, 'Cargando items...');
     if (_errDetalles != null) {
       return _estado(context, _errDetalles!, error: true);
@@ -1064,14 +1161,12 @@ class _CatalogosPageState extends State<CatalogosPage> {
             textAlign: TextAlign.right,
             style: const TextStyle(
                 fontWeight: FontWeight.w700, color: _verde))),
-        DataCell(admin
-            ? _BtnAccion(
-                bg: _rojoBg,
-                fg: _rojo,
-                icon: Icons.close,
-                tooltip: 'Desvincular',
-                onTap: () => _desvincular(d))
-            : const SizedBox.shrink()),
+        DataCell(_BtnAccion(
+            bg: _rojoBg,
+            fg: _rojo,
+            icon: Icons.close,
+            tooltip: 'Desvincular',
+            onTap: () => _desvincular(d))),
       ]));
     }
     filas.add(DataRow(
