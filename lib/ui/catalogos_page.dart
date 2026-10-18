@@ -908,7 +908,9 @@ class _CatalogosPageState extends State<CatalogosPage> {
     if (_items.isEmpty) return _estado(context, 'No hay items registrados');
     final f = _f;
     return TablaModerna(
-      anchoTotal: 780,
+      anchoTotal: 620,
+      columnSpacing: 12,
+      horizontalMargin: 10,
       columnas: const [
         'CODIGO',
         'DESCRIPCION',
@@ -924,9 +926,12 @@ class _CatalogosPageState extends State<CatalogosPage> {
             final serial = i['es_serializado'] == true;
             return DataRow(cells: [
               DataCell(_Codigo('${i['codigo']}', activo: activo)),
-              DataCell(Text('${i['descripcion']}',
-                  style: TextStyle(
-                      color: activo ? null : _gris))),
+              DataCell(ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 150),
+                  child: Text('${i['descripcion']}',
+                      overflow: TextOverflow.ellipsis,
+                      style:
+                          TextStyle(color: activo ? null : _gris)))),
               DataCell(Row(mainAxisSize: MainAxisSize.min, children: [
                 Text(f.format(i['precio_unitario_vigente'] ?? 0),
                     style: TextStyle(
@@ -1025,7 +1030,9 @@ class _CatalogosPageState extends State<CatalogosPage> {
     }
     final f = _f;
     return TablaModerna(
-      anchoTotal: 700,
+      anchoTotal: 580,
+      columnSpacing: 12,
+      horizontalMargin: 10,
       columnas: const ['CODIGO', 'NOMBRE', 'TARIFA', 'ESTADO', 'ACCIONES'],
       filas: [
         for (final t in _tramites)
@@ -1034,10 +1041,13 @@ class _CatalogosPageState extends State<CatalogosPage> {
             final cod = '${t['codigo'] ?? ''}'.trim();
             return DataRow(cells: [
               DataCell(_Codigo(cod.isEmpty ? 'S/C' : cod, activo: activo)),
-              DataCell(Text('${t['nombre']}',
-                  style: TextStyle(
-                      fontWeight: FontWeight.w700,
-                      color: activo ? null : _gris))),
+              DataCell(ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 160),
+                  child: Text('${t['nombre']}',
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                          fontWeight: FontWeight.w700,
+                          color: activo ? null : _gris)))),
               DataCell(Row(mainAxisSize: MainAxisSize.min, children: [
                 Text(f.format(t['tarifa'] ?? 0),
                     style: TextStyle(

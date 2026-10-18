@@ -420,11 +420,15 @@ class TablaModerna extends StatelessWidget {
   final List<String> columnas;
   final List<DataRow> filas;
   final double anchoTotal;
+  final double columnSpacing;
+  final double horizontalMargin;
   const TablaModerna(
       {super.key,
       required this.columnas,
       required this.filas,
-      this.anchoTotal = 900});
+      this.anchoTotal = 900,
+      this.columnSpacing = 20,
+      this.horizontalMargin = 16});
 
   @override
   Widget build(BuildContext context) {
@@ -450,8 +454,8 @@ class TablaModerna extends StatelessWidget {
                 color: T.texto2(context)),
             dataTextStyle:
                 TextStyle(fontSize: 13.5, color: T.texto(context)),
-            horizontalMargin: 16,
-            columnSpacing: 20,
+            horizontalMargin: horizontalMargin,
+            columnSpacing: columnSpacing,
             dividerThickness: 1,
             border: TableBorder(
                 horizontalInside: BorderSide(color: T.borde(context))),
