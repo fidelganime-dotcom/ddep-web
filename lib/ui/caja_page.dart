@@ -98,7 +98,8 @@ class _CajaPageState extends State<CajaPage> {
         eqField: 'fecha',
         eqVal: hoy);
     final hist = await Api.raw('cierre_caja',
-        columns: '*, caj:usuario_sistema(nombre)', orderCol: 'id');
+        columns: '*, caj:usuario_sistema!cierre_caja_cajero_id_fkey(nombre)',
+        orderCol: 'id');
     final items = await Api.raw('item_valorado',
         columns: 'id,codigo,descripcion,precio_unitario_vigente',
         eqField: 'activo',
