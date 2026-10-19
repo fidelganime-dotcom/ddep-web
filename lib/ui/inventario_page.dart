@@ -1831,7 +1831,7 @@ class _RegistrarTabState extends State<_RegistrarTab> {
 
 class _AperturaTab extends StatefulWidget {
   final VoidCallback? onResumen;
-  const _AperturaTab({super.key, this.onResumen});
+  const _AperturaTab({this.onResumen});
   @override
   State<_AperturaTab> createState() => _AperturaTabState();
 }
@@ -2035,7 +2035,7 @@ class _AperturaTabState extends State<_AperturaTab> {
 
 class _PedidosTab extends StatefulWidget {
   final VoidCallback? onResumen;
-  const _PedidosTab({super.key, this.onResumen});
+  const _PedidosTab({this.onResumen});
   @override
   State<_PedidosTab> createState() => _PedidosTabState();
 }
